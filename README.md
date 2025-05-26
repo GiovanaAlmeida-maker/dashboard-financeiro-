@@ -1,4 +1,4 @@
-# Dashboard Financeiro em Flask
+ Dashboard Financeiro em Flask
 
 ## Descrição
 
@@ -21,5 +21,33 @@ O dashboard usa bibliotecas como Pandas para manipulação de dados, Plotly para
 
 ```bash
 pip install flask pandas plotly fpdf
+```
+
+2. Salve o arquivo `app.py` com o código do projeto.
+
+3. Execute o projeto:
+
+```bash
+python app.py
+```
+
+4. Acesse o dashboard no navegador:
+
+```
+http://127.0.0.1:5000/
+```
+
+## Estrutura
+
+- `app.py` — Código principal do backend com Flask, manipulação dos dados, geração dos gráficos e páginas HTML via template string.
+- `data/financeiro.csv` — Arquivo CSV onde os dados financeiros são salvos.
+
+## Dependências
+
+- Flask
+- Pandas
+- Plotly
+- FPDF
+
 
 
