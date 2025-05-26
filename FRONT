@@ -1,0 +1,273 @@
+from flask import Flask, request, redirect, url_for, render_template_string, send_file
+import pandas as pd
+import plotly.express as px
+from fpdf import FPDF
+import io
+import os
+
+app = Flask(__name__)
+
+DATA_FILE = 'financeiro.csv'
+
+# Cria arquivo CSV vazio se não existir
+if not os.path.exists(DATA_FILE):
+    df = pd.DataFrame(columns=['Data', 'Categoria', 'Subcategoria', 'Tipo', 'Valor', 'Observacao'])
+    df.to_csv(DATA_FILE, index=False)
+
+def load_data():
+    return pd.read_csv(DATA_FILE, parse_dates=['Data'])
+
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
+
+def generate_graphs(df):
+    # Gráfico linha: saldo acumulado
+    df_sorted = df.sort_values('Data')
+    df_sorted['ValorSaldo'] = df_sorted.apply(lambda r: r['Valor'] if r['Tipo']=='Receita' or r['Tipo']=='Investimento' else -r['Valor'], axis=1)
+    df_sorted['SaldoAcumulado'] = df_sorted['ValorSaldo'].cumsum()
+    fig_linha = px.line(df_sorted, x='Data', y='SaldoAcumulado', title='Saldo Acumulado ao Longo do Tempo')
+    graf_linha = fig_linha.to_html(full_html=False)
+
+    # Gráfico pizza: distribuição despesas por categoria
+    despesas = df[df['Tipo']=='Despesa'].groupby('Categoria')['Valor'].sum().reset_index()
+    if not despesas.empty:
+        fig_pizza = px.pie(despesas, names='Categoria', values='Valor', title='Despesas por Categoria')
+        graf_pizza = fig_pizza.to_html(full_html=False)
+    else:
+        graf_pizza = "<p>Sem despesas para mostrar gráfico de pizza.</p>"
+
+    # Gráfico barras: comparação receitas vs despesas
+    soma_tipo = df.groupby('Tipo')['Valor'].sum().reset_index()
+    fig_barra = px.bar(soma_tipo, x='Tipo', y='Valor', title='Receitas, Despesas e Investimentos')
+    graf_barra = fig_barra.to_html(full_html=False)
+
+    return graf_linha, graf_pizza, graf_barra
+
+@app.route('/')
+def index():
+    df = load_data()
+    receita = df[df['Tipo'] == 'Receita']['Valor'].sum()
+    despesa = df[df['Tipo'] == 'Despesa']['Valor'].sum()
+    investimento = df[df['Tipo'] == 'Investimento']['Valor'].sum()
+    saldo = receita - despesa + investimento
+    graf_linha, graf_pizza, graf_barra = generate_graphs(df)
+    return render_template_string(BASE_TEMPLATE, 
+        receita=receita, despesa=despesa, investimento=investimento, saldo=saldo,
+        grafico_linha=graf_linha, grafico_pizza=graf_pizza, grafico_barra=graf_barra,
+        content=INDEX_CONTENT
+    )
+
+@app.route('/add', methods=['GET', 'POST'])
+def add():
+    if request.method == 'POST':
+        data = request.form['data']
+        categoria = request.form['categoria']
+        subcategoria = request.form['subcategoria']
+        tipo = request.form['tipo']
+        valor = float(request.form['valor'])
+        observacao = request.form['observacao']
+
+        df = load_data()
+        df = df.append({'Data': data, 'Categoria': categoria, 'Subcategoria': subcategoria,
+                        'Tipo': tipo, 'Valor': valor, 'Observacao': observacao}, ignore_index=True)
+        save_data(df)
+        return redirect(url_for('index'))
+    return render_template_string(BASE_TEMPLATE, content=ADD_CONTENT)
+
+@app.route('/filter', methods=['GET', 'POST'])
+def filter_data():
+    filtered = False
+    receita = despesa = investimento = saldo = 0
+    graf_linha = graf_pizza = graf_barra = ''
+    if request.method == 'POST':
+        start_date = request.form['start_date']
+        end_date = request.form['end_date']
+        df = load_data()
+        mask = (df['Data'] >= start_date) & (df['Data'] <= end_date)
+        df_filtered = df.loc[mask]
+
+        receita = df_filtered[df_filtered['Tipo'] == 'Receita']['Valor'].sum()
+        despesa = df_filtered[df_filtered['Tipo'] == 'Despesa']['Valor'].sum()
+        investimento = df_filtered[df_filtered['Tipo'] == 'Investimento']['Valor'].sum()
+        saldo = receita - despesa + investimento
+
+        graf_linha, graf_pizza, graf_barra = generate_graphs(df_filtered)
+        filtered = True
+        return render_template_string(BASE_TEMPLATE,
+            receita=receita, despesa=despesa, investimento=investimento, saldo=saldo,
+            grafico_linha=graf_linha, grafico_pizza=graf_pizza, grafico_barra=graf_barra,
+            content=FILTER_CONTENT, filtered=filtered)
+    return render_template_string(BASE_TEMPLATE, content=FILTER_CONTENT, filtered=filtered)
+
+@app.route('/export_pdf')
+def export_pdf():
+    df = load_data()
+    receita = df[df['Tipo'] == 'Receita']['Valor'].sum()
+    despesa = df[df['Tipo'] == 'Despesa']['Valor'].sum()
+    investimento = df[df['Tipo'] == 'Investimento']['Valor'].sum()
+    saldo = receita - despesa + investimento
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=16)
+    pdf.cell(0, 10, "Relatório Financeiro", ln=True, align='C')
+
+    pdf.set_font("Arial", size=12)
+    pdf.ln(10)
+    pdf.cell(0, 10, f"Receita Total: R$ {receita:.2f}", ln=True)
+    pdf.cell(0, 10, f"Despesa Total: R$ {despesa:.2f}", ln=True)
+    pdf.cell(0, 10, f"Investimento Total: R$ {investimento:.2f}", ln=True)
+    pdf.cell(0, 10, f"Saldo: R$ {saldo:.2f}", ln=True)
+
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Movimentações", ln=True)
+    pdf.set_font("Arial", size=10)
+
+    for _, row in df.iterrows():
+        pdf.cell(0, 8, f"{row['Data']} | {row['Categoria']} | {row['Subcategoria']} | {row['Tipo']} | R$ {row['Valor']:.2f} | {row['Observacao']}", ln=True)
+
+    pdf_output = io.BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+
+    return send_file(pdf_output, mimetype='application/pdf', download_name='relatorio_financeiro.pdf')
+
+BASE_TEMPLATE = """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard Financeiro</title>
+  <style>
+    body {font-family: Arial, sans-serif; margin:0; padding:0; background:#f9f9f9; color:#333;}
+    header {background:#007ACC; color:#fff; padding:15px 20px; display:flex; justify-content:space-between; align-items:center;}
+    header h1 {margin:0;}
+    nav a {color:#fff; margin-left:20px; text-decoration:none; font-weight:bold;}
+    nav a:hover {text-decoration:underline;}
+    main {max-width:900px; margin:20px auto; padding:0 20px;}
+    h2 {color:#007ACC; margin-top:0;}
+    ul {list-style:none; padding:0;}
+    ul li {margin-bottom:8px; font-size:1.1em;}
+    .form-section {background:#fff; padding:20px; border-radius:6px; box-shadow:0 0 8px rgba(0,0,0,0.1);}
+    form label {display:block; margin:12px 0 5px;}
+    form input, form select {width:100%; padding:8px; box-sizing:border-box;}
+    form button {margin-top:15px; background:#007ACC; color:#fff; border:none; padding:12px; width:100%; font-size:1em; cursor:pointer; border-radius:4px;}
+    form button:hover {background:#005F99;}
+    .graficos {margin-top:30px;}
+    .grafico {margin-bottom:30px; background:#fff; padding:10px; border-radius:6px; box-shadow:0 0 8px rgba(0,0,0,0.05);}
+    footer {text-align:center; padding:15px 0; background:#007ACC; color:#fff; margin-top:40px;}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dashboard Financeiro</h1>
+    <nav>
+      <a href="{{ url_for('index') }}">Início</a>
+      <a href="{{ url_for('add') }}">Adicionar</a>
+      <a href="{{ url_for('filter_data') }}">Filtrar</a>
+      <a href="{{ url_for('export_pdf') }}">Exportar PDF</a>
+    </nav>
+  </header>
+  <main>
+    {{ content|safe }}
+  </main>
+  <footer>
+    &copy; 2025 Dashboard Financeiro
+  </footer>
+</body>
+</html>
+"""
+
+INDEX_CONTENT = """
+<h2>Resumo Financeiro</h2>
+<ul>
+  <li><strong>Receita Total:</strong> R$ {{ receita:.2f }}</li>
+  <li><strong>Despesa Total:</strong> R$ {{ despesa:.2f }}</li>
+  <li><strong>Investimento Total:</strong> R$ {{ investimento:.2f }}</li>
+  <li><strong>Saldo:</strong> R$ {{ saldo:.2f }}</li>
+</ul>
+
+<div class="graficos">
+  <div class="grafico">
+    {{ grafico_linha|safe }}
+  </div>
+  <div class="grafico">
+    {{ grafico_pizza|safe }}
+  </div>
+  <div class="grafico">
+    {{ grafico_barra|safe }}
+  </div>
+</div>
+"""
+
+ADD_CONTENT = """
+<h2>Adicionar Movimentação</h2>
+<div class="form-section">
+  <form method="POST">
+    <label for="data">Data</label>
+    <input type="date" id="data" name="data" required>
+
+    <label for="categoria">Categoria</label>
+    <input type="text" id="categoria" name="categoria" placeholder="Ex: Alimentação" required>
+
+    <label for="subcategoria">Subcategoria</label>
+    <input type="text" id="subcategoria" name="subcategoria" placeholder="Ex: Restaurante">
+
+    <label for="tipo">Tipo</label>
+    <select id="tipo" name="tipo" required>
+      <option value="Receita">Receita</option>
+      <option value="Despesa">Despesa</option>
+      <option value="Investimento">Investimento</option>
+    </select>
+
+    <label for="valor">Valor (R$)</label>
+    <input type="number" id="valor" name="valor" step="0.01" min="0" required>
+
+    <label for="observacao">Observação</label>
+    <input type="text" id="observacao" name="observacao" placeholder="Opcional">
+
+    <button type="submit">Adicionar</button>
+  </form>
+</div>
+"""
+
+FILTER_CONTENT = """
+<h2>Filtrar Movimentações por Data</h2>
+<div class="form-section">
+  <form method="POST">
+    <label for="start_date">Data Início</label>
+    <input type="date" id="start_date" name="start_date" required>
+
+    <label for="end_date">Data Fim</label>
+    <input type="date" id="end_date" name="end_date" required>
+
+    <button type="submit">Filtrar</button>
+  </form>
+</div>
+
+{% if filtered %}
+<h2>Resumo Financeiro Filtrado</h2>
+<ul>
+  <li><strong>Receita Total:</strong> R$ {{ receita:.2f }}</li>
+  <li><strong>Despesa Total:</strong> R$ {{ despesa:.2f }}</li>
+  <li><strong>Investimento Total:</strong> R$ {{ investimento:.2f }}</li>
+  <li><strong>Saldo:</strong> R$ {{ saldo:.2f }}</li>
+</ul>
+
+<div class="graficos">
+  <div class="grafico">
+    {{ grafico_linha|safe }}
+  </div>
+  <div class="grafico">
+    {{ grafico_pizza|safe }}
+  </div>
+  <div class="grafico">
+    {{ grafico_barra|safe }}
+  </div>
+</div>
+{% endif %}
+"""
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
