@@ -1,5 +1,5 @@
-## Descrição
-
+## Dashboard Financeiro em Flask
+ 
 Este projeto é um dashboard financeiro simples desenvolvido em Python usando Flask. Ele permite cadastrar, visualizar e filtrar movimentações financeiras (receitas, despesas e investimentos), além de gerar gráficos interativos e exportar relatórios em PDF.
 
 O dashboard usa bibliotecas como Pandas para manipulação de dados, Plotly para gráficos interativos, e FPDF para exportação em PDF.
