@@ -1,0 +1,200 @@
+from flask import Flask, render_template_string, request, redirect, send_file
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+from io import BytesIO
+import os
+from fpdf import FPDF
+
+app = Flask(__name__)
+
+DATA_PATH = 'data/financeiro.csv'
+
+# Utilitários
+def load_data():
+    return pd.read_csv(DATA_PATH, parse_dates=['Data'])
+
+def save_data(df):
+    df.to_csv(DATA_PATH, index=False)
+
+def generate_graphs(df):
+    df['Mes'] = df['Data'].dt.to_period('M').astype(str)
+    resumo = df.groupby(['Mes', 'Tipo'])['Valor'].sum().reset_index()
+    fig_linha = px.line(resumo, x='Mes', y='Valor', color='Tipo', title='Evolução Financeira')
+    grafico_linha = pio.to_html(fig_linha, full_html=False)
+
+    despesas = df[df['Tipo'] == 'Despesa']
+    if not despesas.empty:
+        fig_pizza = px.pie(despesas, names='Subcategoria', values='Valor', title='Distribuição das Despesas')
+        grafico_pizza = pio.to_html(fig_pizza, full_html=False)
+    else:
+        grafico_pizza = "<p>Sem dados de despesas para gráfico de pizza.</p>"
+
+    fig_barra = px.bar(df, x='Categoria', y='Valor', color='Tipo', title='Comparativo de Categorias')
+    grafico_barra = pio.to_html(fig_barra, full_html=False)
+
+    return grafico_linha, grafico_pizza, grafico_barra
+
+# Templates
+base_template = '''
+<!doctype html>
+<title>Dashboard Financeiro</title>
+<h1>Dashboard Financeiro</h1>
+<a href="/">Início</a> | <a href="/add">Adicionar</a> | <a href="/filter">Filtrar</a> | <a href="/export">Exportar PDF</a>
+<hr>
+{% block content %}{% endblock %}
+'''
+
+@app.route('/')
+def index():
+    df = load_data()
+    receita = df[df['Tipo'] == 'Receita']['Valor'].sum()
+    despesa = df[df['Tipo'] == 'Despesa']['Valor'].sum()
+    investimento = df[df['Tipo'] == 'Investimento']['Valor'].sum()
+    saldo = receita + despesa + investimento
+
+    grafico_linha, grafico_pizza, grafico_barra = generate_graphs(df)
+
+    return render_template_string(base_template + '''
+{% block content %}
+<h2>Indicadores</h2>
+<ul>
+<li><strong>Receita:</strong> R$ {{ receita }}</li>
+<li><strong>Despesa:</strong> R$ {{ despesa }}</li>
+<li><strong>Investimento:</strong> R$ {{ investimento }}</li>
+<li><strong>Saldo:</strong> R$ {{ saldo }}</li>
+</ul>
+
+<h2>Gráficos</h2>
+<div>{{ grafico_linha | safe }}</div>
+<div>{{ grafico_pizza | safe }}</div>
+<div>{{ grafico_barra | safe }}</div>
+{% endblock %}
+''', receita=receita, despesa=despesa, investimento=investimento, saldo=saldo,
+   grafico_linha=grafico_linha, grafico_pizza=grafico_pizza, grafico_barra=grafico_barra)
+
+@app.route('/add', methods=['GET', 'POST'])
+def add():
+    if request.method == 'POST':
+        data = request.form['data']
+        categoria = request.form['categoria']
+        subcategoria = request.form['subcategoria']
+        tipo = request.form['tipo']
+        valor = float(request.form['valor'])
+        observacao = request.form['observacao']
+
+        df = load_data()
+        new_row = pd.DataFrame({
+            'Data': [data],
+            'Categoria': [categoria],
+            'Subcategoria': [subcategoria],
+            'Tipo': [tipo],
+            'Valor': [valor],
+            'Observacao': [observacao]
+        })
+        df = pd.concat([df, new_row], ignore_index=True)
+        save_data(df)
+        return redirect('/')
+
+    return render_template_string(base_template + '''
+{% block content %}
+<h2>Adicionar Movimentação</h2>
+<form method="post">
+<label>Data:</label><br><input type="date" name="data" required><br>
+<label>Categoria:</label><br><input type="text" name="categoria" required><br>
+<label>Subcategoria:</label><br><input type="text" name="subcategoria" required><br>
+<label>Tipo:</label><br>
+<select name="tipo">
+<option>Receita</option>
+<option>Despesa</option>
+<option>Investimento</option>
+</select><br>
+<label>Valor:</label><br><input type="number" step="0.01" name="valor" required><br>
+<label>Observação:</label><br><input type="text" name="observacao"><br><br>
+<input type="submit" value="Adicionar">
+</form>
+{% endblock %}
+''')
+
+@app.route('/filter', methods=['GET', 'POST'])
+def filter_data():
+    df = load_data()
+    if request.method == 'POST':
+        start_date = pd.to_datetime(request.form['start_date'])
+        end_date = pd.to_datetime(request.form['end_date'])
+        df = df[(df['Data'] >= start_date) & (df['Data'] <= end_date)]
+
+        receita = df[df['Tipo'] == 'Receita']['Valor'].sum()
+        despesa = df[df['Tipo'] == 'Despesa']['Valor'].sum()
+        investimento = df[df['Tipo'] == 'Investimento']['Valor'].sum()
+        saldo = receita + despesa + investimento
+
+        grafico_linha, grafico_pizza, grafico_barra = generate_graphs(df)
+
+        return render_template_string(base_template + '''
+{% block content %}
+<h2>Indicadores (Período Filtrado)</h2>
+<ul>
+<li><strong>Receita:</strong> R$ {{ receita }}</li>
+<li><strong>Despesa:</strong> R$ {{ despesa }}</li>
+<li><strong>Investimento:</strong> R$ {{ investimento }}</li>
+<li><strong>Saldo:</strong> R$ {{ saldo }}</li>
+</ul>
+
+<h2>Gráficos</h2>
+<div>{{ grafico_linha | safe }}</div>
+<div>{{ grafico_pizza | safe }}</div>
+<div>{{ grafico_barra | safe }}</div>
+{% endblock %}
+''', receita=receita, despesa=despesa, investimento=investimento, saldo=saldo,
+   grafico_linha=grafico_linha, grafico_pizza=grafico_pizza, grafico_barra=grafico_barra)
+
+    return render_template_string(base_template + '''
+{% block content %}
+<h2>Filtrar por Período</h2>
+<form method="post">
+<label>Data Inicial:</label><br><input type="date" name="start_date" required><br>
+<label>Data Final:</label><br><input type="date" name="end_date" required><br><br>
+<input type="submit" value="Filtrar">
+</form>
+{% endblock %}
+''')
+
+@app.route('/export')
+def export_pdf():
+    df = load_data()
+    receita = df[df['Tipo'] == 'Receita']['Valor'].sum()
+    despesa = df[df['Tipo'] == 'Despesa']['Valor'].sum()
+    investimento = df[df['Tipo'] == 'Investimento']['Valor'].sum()
+    saldo = receita + despesa + investimento
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="Relatório Financeiro", ln=True, align='C')
+    pdf.ln(10)
+    pdf.multi_cell(0, 10, f"""
+Total Receita: R$ {receita:.2f}
+Total Despesa: R$ {despesa:.2f}
+Total Investimento: R$ {investimento:.2f}
+Saldo: R$ {saldo:.2f}
+""")
+    pdf.ln(10)
+    pdf.cell(200, 10, txt="Registros:", ln=True)
+
+    for idx, row in df.iterrows():
+        linha = f"{row['Data'].date()} | {row['Categoria']} | {row['Subcategoria']} | {row['Tipo']} | {row['Valor']} | {row['Observacao']}"
+        pdf.multi_cell(0, 8, linha)
+
+    output = BytesIO()
+    pdf.output(output)
+    output.seek(0)
+
+    return send_file(output, download_name="relatorio_financeiro.pdf", as_attachment=True)
+
+if __name__ == '__main__':
+    if not os.path.exists('data'):
+        os.makedirs('data')
+    if not os.path.exists(DATA_PATH):
+        pd.DataFrame(columns=['Data', 'Categoria', 'Subcategoria', 'Tipo', 'Valor', 'Observacao']).to_csv(DATA_PATH, index=False)
+    app.run(debug=True)
